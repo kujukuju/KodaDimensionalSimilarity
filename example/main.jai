@@ -6,10 +6,16 @@
     options.output_type = .EXECUTABLE;
     options.output_executable_name = "main";
 
+    import_path: [..] string;
+    array_copy(*import_path, options.import_path);
+    array_add(*import_path, "../../");
+    options.import_path = import_path;
+
     set_build_options(options, w);
 
     add_build_file("example.jai", w);
 }
 
 #import "Compiler";
+#import "Basic";
 

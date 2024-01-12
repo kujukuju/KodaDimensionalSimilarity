@@ -1,7 +1,7 @@
 
 #module_parameters(PARALLEL := true);
 
-// this algorithm consideres 0 to be invalid data and ignores it as a sparse cell
+// this algorithm considers 0 to be invalid data and ignores it as a sparse cell
 sparse_n_dimensional_distance :: (a: [] float, b: [] float) -> float {
     assert(a.count == b.count, "You cannot compare different numbers of dimensions.");
 
@@ -20,19 +20,71 @@ sparse_n_dimensional_distance :: (a: [] float, b: [] float) -> float {
     for i: 0..a.count - 1 {
         if a[i] != 0 && b[i] != 0 {
             // sum { (b - a)^2 / count }
-            delta: float64 = (b[i] - a[i]);
+            delta := b[i] - a[i];
             delta *= delta;
             total += delta / valid;
-            // total += delta;
         }
     }
 
     return cast(float) sqrt(total);
 }
 
-fuzzy_means :: (points: [] [] float, $K: int, max_iterations: int = 1000, initial_clusters: [] [] float, fuzzification: float = 2, allocator: Allocator = .{}) -> clusters: [K] [] float, iterations: int {
-    clusters, iterations := fuzzy_means(points, K, sparse_n_dimensional_distance, max_iterations, initial_clusters, fuzzification, allocator);
-    return clusters, iterations;
+n_dimensional_distance :: (a: [] float, b: [] float) -> float {
+    assert(a.count == b.count, "You cannot compare different numbers of dimensions.");
+
+    total: float64;
+
+    // subtotals := NewArray(get_thread_count(), float64, allocator = temp);
+    // parallel_for(0, a.count, (i: int, thread: int, using data: struct {a: [] float; b: [] float; subtotals: [] float64;}) {
+    //     delta := b[i] - a[i];
+    //     delta *= delta;
+    //     subtotals[thread] += delta;
+    // }, .{a, b, subtotals}, thread_count = 2);
+
+    // for subtotal: subtotals {
+    //     total += subtotal;
+    // }
+
+    for i: 0..a.count - 1 {
+        delta := b[i] - a[i];
+        delta *= delta;
+        total += delta;
+    }
+
+    return cast(float) sqrt(total);
+}
+
+cosine_similarity :: (a: [] float, b: [] float) -> float {
+    dot: float64;
+    a_mag: float64;
+    b_mag: float64;
+
+    // data_struct: struct {a: *float64; b: *float64; c: *float64;} = .{
+    //     *dot, *a_mag, *b_mag,
+    // };
+
+    // parallel_for(0, a.count, (i: int, using data: struct {a: [] float; b: [] float; dot: *float64; a_mag: *float64; b_mag: *float64;}) {
+    //     dot.* += a[i] * b[i];
+    //     a_mag.* += a[i] * a[i];
+    //     b_mag.* += b[i] * b[i];
+    // }, .{a, b, *dot, *a_mag, *b_mag});
+
+    for i: 0..a.count - 1 {
+        dot += a[i] * b[i];
+        a_mag += a[i] * a[i];
+        b_mag += b[i] * b[i];
+    }
+
+    return cast(float) (dot / (sqrt(a_mag) * sqrt(b_mag)));
+}
+
+cosine_distance :: (a: [] float, b: [] float) -> float {
+    return 1 - cosine_similarity(a, b);
+}
+
+fuzzy_means :: (points: [] [] float, $K: int, max_iterations: int = 1000, initial_clusters: [] [] float, fuzzification: float = 2, allocator: Allocator = .{}) -> clusters: [K] [] float, membership: [] [K] float, iterations: int {
+    clusters, membership, iterations := fuzzy_means(points, K, sparse_n_dimensional_distance, max_iterations, initial_clusters, fuzzification, allocator);
+    return clusters, membership, iterations;
 }
 
 // points: an array of points where it's [number of points] [number of dimensions] value
@@ -41,16 +93,16 @@ fuzzy_means :: (points: [] [] float, $K: int, max_iterations: int = 1000, initia
 // max_iterations: the number of max iterations
 // initial_clusters: the initial cluster centers if known
 // fuzzification: the weight of a point to a specific cluster is (1 / distance) ^ fuzzification
-fuzzy_means :: (points: [] [] float, $K: int, $distance_function: (a: [] float, b: [] float) -> float, max_iterations: int = 1000, initial_clusters: [] [], fuzzification: float = 2, allocator: Allocator = .{}) -> clusters: [K] [] float, iterations: int {
+fuzzy_means :: (points: [] [] float, $K: int, $distance_function: (a: [] float, b: [] float) -> float, max_iterations: int = 1000, initial_clusters: [] [] float, fuzzification: float = 2, allocator: Allocator = .{}) -> clusters: [K] [] float, membership: [] [K] float, iterations: int {
     assert(initial_clusters.count == K, "You must have k initial clusters.");
     
     if points.count == 0 {
         empty: [K] [] float;
-        return empty, 0;
+        return empty, .[], 0;
     }
 
     dimensions := points[0].count;
-    membership := NewArray(points.count, [K] float, allocator = temp);
+    membership := NewArray(points.count, [K] float, allocator = allocator);
 
     intermediary_flat_clusters64 := NewArray(K * dimensions, float64, allocator = temp);
     intermediary_clusters64: [K] [] float64;
@@ -84,103 +136,107 @@ fuzzy_means :: (points: [] [] float, $K: int, $distance_function: (a: [] float, 
         print("On iteration % of %.\n", iterations, max_iterations);
 
         // calculate the membership weights for each point
-        for point, a: points {
-            if a % 1000 == 0 {
-                print("On point % of %.\n", a + 1, points.count);
-            }
-            for cluster, b: clusters {
-                distance := distance_function(point, cluster);
-                membership[a][b] = pow(1.0 / (distance + 1), fuzzification);
-            }
+        parallel_for(0, points.count, (a: int, thread: int, using data: struct {points: [] [] float; clusters: [K] [] float; membership: [] [K] float; fuzzification: float;}) {
+            point := points[a];
+            // for point, a: points {
+                if a % 1000 == 0 {
+                    print("On point % of %.\n", a + 1, points.count);
+                }
 
-            membership_sum: float;
-            for b: 0..K - 1 {
-                membership_sum += membership[a][b];
-            }
-            for b: 0..K - 1 {
-                membership[a][b] /= membership_sum;
-            }
+                // for cluster, b: clusters {
+                //     distance := distance_function(point, cluster);
+                //     membership[a][b] = pow(1.0 / (distance + 1), fuzzification);
+                // }
 
-            // this is my attempt to match the wiki algorithm... it just looks wrong
-            // distances: [K] float;
-            // for cluster, b: clusters {
-            //     distance[b] = distance_function(point, cluster);
+                // membership_sum: float;
+                // for b: 0..K - 1 {
+                //     membership_sum += membership[a][b];
+                // }
+                // for b: 0..K - 1 {
+                //     membership[a][b] /= membership_sum;
+                // }
+
+                // this is my attempt to match the wiki algorithm... it just looks wrong
+                distances: [K] float;
+                for cluster, b: clusters {
+                    distances[b] = distance_function(point, cluster);
+                }
+
+                for b: 0..K - 1 {
+                    sum: float64;
+                    for c: 0..K - 1 {
+                        if distances[c] < 0.0000001 {
+                            sum = 100000;
+                            break;
+                        }
+
+                        sum += pow(distances[b] / distances[c], 2 / (fuzzification - 1));
+                    }
+                    // print("final sum is %\n", sum);
+                    sum = 1.0 / sum;
+                    membership[a][b] = cast(float) sum;
+                }
             // }
-
-            // for cluster, b: clusters {
-            //     w: float64;
-            //     for c: 0..K - 1 {
-            //         if distance[c] < 0.0000001 {
-            //             membership[a][b] = 0.0;
-            //             continue cluster;
-            //         }
-
-            //         w += pow(distance[b] / distance[c], 2 / (fuzzification - 1));
-            //     }
-            //     w := 1.0 / w;
-            //     membership[a][b] = cast(float) (pow(w, fuzzification) * distances[b] * distances[b]);
-            // }
-
-            // test
-            // #if true {
-            //     membership_sum := 0.0;
-            //     for b: 0..membership[a].count - 1 {
-            //         membership_sum += membership[a][b];
-            //     }
-
-            //     assert(membership_sum)
-            // }
-        }
+        }, .{points, clusters, membership, fuzzification});
 
         convergence := true;
 
         // relculate cluster centroids based on weighted point cluster memberships
         memset(intermediary_flat_clusters64.data, 0, K * dimensions * size_of(float64));
         memset(intermediary_flat_clusters32.data, 0, K * dimensions * size_of(float32));
-        for a: 0..K - 1 {
-            print("On cluster % of %.\n", a + 1, K);
-            total_membership_weight: float64;
-            for point_membership, point_index: membership {
-                membership_weight := point_membership[a];
-                total_membership_weight += membership_weight;
+        parallel_for(0, K, (a: int, thread: int, using data: struct {
+            points: [] [] float;
+            clusters: [K] [] float;
+            membership: [] [K] float;
+            intermediary_clusters64: [K] [] float64;
+            intermediary_clusters32: [K] [] float;
+            dimensions: int;
+            fuzzification: float;
+            convergence: *bool;}) {
+            // for a: 0..K - 1 {
+                print("On cluster % of %.\n", a + 1, K);
+                total_membership_weight: float64;
+                for point_membership, point_index: membership {
+                    membership_weight := pow(point_membership[a], fuzzification);
+                    total_membership_weight += membership_weight;
+
+                    for dimension: 0..dimensions - 1 {
+                        intermediary_clusters64[a][dimension] += membership_weight * points[point_index][dimension];
+                    }
+                }
 
                 for dimension: 0..dimensions - 1 {
-                    intermediary_clusters64[a][dimension] += membership_weight * points[point_index][dimension];
+                    intermediary_clusters32[a][dimension] = cast(float) (intermediary_clusters64[a][dimension] / total_membership_weight);
                 }
-            }
 
-            divisor := total_membership_weight; // * points.count;
-            for dimension: 0..dimensions - 1 {
-                intermediary_clusters32[a][dimension] = cast(float) (intermediary_clusters64[a][dimension] / divisor);
-            }
+                // for i: 0..dimensions - 1 {
+                //     if intermediary_clusters32[a][i] > 0.0000001 {
+                //         print("% ", intermediary_clusters32[a][i]);
+                //     }
+                // }
 
-            // for i: 0..dimensions - 1 {
-            //     if intermediary_clusters32[a][i] > 0.0000001 {
-            //         print("% ", intermediary_clusters32[a][i]);
-            //     }
+                dist := distance_function(intermediary_clusters32[a], clusters[a]);
+                print("Dist between old and new clusters %\n", dist);
+                if convergence.* && dist >= 0.0000001 {
+                    convergence.* = false;
+                }
+
+                for dimension: 0..dimensions - 1 {
+                    clusters[a][dimension] = intermediary_clusters32[a][dimension];
+                }
             // }
-
-            dist := distance_function(intermediary_clusters32[a], clusters[a]);
-            print("Dist between old and new clusters %\n", dist);
-            if convergence && dist >= 0.0000001 {
-                convergence = false;
-            }
-
-            for dimension: 0..dimensions - 1 {
-                clusters[a][dimension] = intermediary_clusters32[a][dimension];
-            }
-        }
+        }, .{points, clusters, membership, intermediary_clusters64, intermediary_clusters32, dimensions, fuzzification, *convergence});
 
         if convergence {
             break;
         }
     }
 
-    return clusters, iterations;
+    return clusters, membership, iterations;
 }
 
 classify_points :: (points: [] [] float, clusters: [$K] [] float, allocator: Allocator = .{}) -> points: [] [K] float {
-    return classify_points(points, clusters, sparse_n_dimensional_distance, allocator);
+    return classify_points(points, clusters, cosine_distance, allocator);
 }
 
 classify_points :: (points: [] [] float, clusters: [$K] [] float, $distance_function: (a: [] float, b: [] float) -> float, allocator: Allocator = .{}) -> points: [] [K] float {
@@ -189,7 +245,12 @@ classify_points :: (points: [] [] float, clusters: [$K] [] float, $distance_func
     for point, index: points {
         for i: 0..K - 1 {
             distance := distance_function(point, clusters[i]);
-            classifications[index][i] = 1 / (distance + 1);
+
+            if distance < 0.000001 {
+                classifications[index][i] = 100000;
+            } else {
+                classifications[index][i] = 1 / distance;
+            }
         }
     }
 
@@ -230,6 +291,35 @@ evenly_distributed_maximum_boundaries :: (points: [] [] float, clusters: *[$K] [
     }
 }
 
+evenly_distributed_wave_boundaries :: (points: [] [] float, clusters: *[$K] [] float) {
+    dimensions := points[0].count;
+    dimension_index_half_width := 1.0 / K * dimensions;
+
+    for i: 0..K - 1 {
+        k_progress := cast(float) i / K;
+        wave_center := k_progress * 2 * PI;
+
+        cluster_dimensions := clusters.*[i];
+        for a: 0..dimensions - 1 {
+            a_progress := cast(float) a / dimensions;
+            a_sign_input := a_progress * PI * 2 * K;
+            // distance := a * K;
+
+            cluster_dimensions[a] = cos(a_sign_input - wave_center) * 0.5 + 0.5;
+        }
+    }
+}
+
+random :: (points: [] [] float, clusters: *[$K] [] float) {
+    // dimensions := points[0].count;
+
+    for a: 0..K - 1 {
+        for b: 0..clusters.*[a].count - 1 {
+            clusters.*[a][b] = random_get_zero_to_one();
+        }
+    }
+}
+
 #scope_module
 
 roundi :: (v: float) -> int {
@@ -238,3 +328,5 @@ roundi :: (v: float) -> int {
 
 #import "Basic";
 #import "Math";
+#import "Random";
+#import "JaiParallel";

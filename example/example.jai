@@ -150,7 +150,9 @@ main :: () {
             initial_cluster.count = player_count;
         }
 
-        evenly_distributed_maximum_boundaries(game_scores, *initial_clusters);
+        // evenly_distributed_maximum_boundaries(game_scores, *initial_clusters);
+        // evenly_distributed_wave_boundaries(game_scores, *initial_clusters);
+        random(game_scores, *initial_clusters);
         // builder: String_Builder;
         // for cluster: initial_clusters {
         //     for value: cluster {
@@ -161,7 +163,7 @@ main :: () {
         // write_entire_file("initial_clusters.txt", builder_to_string(*builder));
 
         iterations: int;
-        clusters, iterations = fuzzy_means(game_scores, K, max_iterations = 100, initial_clusters = initial_clusters);
+        clusters, classifications, iterations = fuzzy_means(game_scores, K, max_iterations = 40, initial_clusters = initial_clusters, fuzzification = 2);
 
         print("Completed fuzzy means in % iterations.\n", iterations);
 
@@ -213,6 +215,44 @@ main :: () {
         }
     }
 
+    // literal game similarities
+    // if requested_game_id {
+    //     requested_game_clusters: [] float;
+    //     game_index_pointer := table_find_pointer(*games, requested_game_id);
+    //     assert(!!game_index_pointer, "Requested game doesn't exist.");
+    //     game_index := game_index_pointer.*;
+
+    //     requested_scores := game_scores[game_index];
+
+    //     best_game_rating: float;
+    //     best_game_index: int = -1;
+    //     best_game_rating_minimum: float;
+    //     for i: 0..9 {
+    //         for scores, index: game_scores {
+    //             similarity := sparse_n_dimensional_distance(requested_scores, scores);
+    //             if similarity < 0.0000001 {
+    //                 continue;
+    //             }
+    //             if best_game_rating_minimum > 0 && similarity <= best_game_rating_minimum {
+    //                 continue;
+    //             }
+
+    //             if best_game_rating == 0 || similarity < best_game_rating {
+    //                 best_game_rating = similarity;
+    //                 best_game_index = index;
+    //             }
+    //         }
+
+    //         best_game_id := table_find_pointer(*game_id_lookup, best_game_index).*;
+    //         print("Game %. % with a score of %.\n", i + 1, best_game_id, best_game_rating);
+
+    //         best_game_index = -1;
+    //         best_game_rating_minimum = best_game_rating;
+    //         best_game_rating = 0;
+    //     }
+    // }
+
+    // game classification similarities
     if requested_game_id {
         requested_game_clusters: [] float;
         game_index_pointer := table_find_pointer(*games, requested_game_id);
@@ -227,6 +267,7 @@ main :: () {
         for i: 0..9 {
             for classification, index: classifications {
                 similarity := calculate_similarity(requested_classifications, classification);
+                // similarity := cosine_similarity(requested_classifications, classification);
                 if best_game_rating_maximum > 0 && similarity >= best_game_rating_maximum {
                     continue;
                 }
@@ -251,11 +292,43 @@ main :: () {
 calculate_similarity :: (a: [$K] float, b: [K] float) -> float {
     sum: float;
     for i: 0..K - 1 {
-        sum += 1.0 / (a[i] - b[i] + 1);
+        if abs(a[i] - b[i]) < 0.000001 {
+            sum += 100000;
+        } else {
+            sum += 1.0 / (a[i] - b[i]);
+        }
     }
 
     return sum;
 }
+
+// sparse_n_dimensional_distance :: (a: [] float, b: [] float) -> float {
+//     assert(a.count == b.count, "You cannot compare different numbers of dimensions.");
+
+//     // TODO parallel
+
+//     total: float64;
+//     count: int;
+
+//     valid: int;
+//     for i: 0..a.count - 1 {
+//         if a[i] != 0 && b[i] != 0 {
+//             valid += 1;
+//         }
+//     }
+
+//     for i: 0..a.count - 1 {
+//         if a[i] != 0 && b[i] != 0 {
+//             // sum { (b - a)^2 / count }
+//             delta: float64 = (b[i] - a[i]);
+//             delta *= delta;
+//             total += delta / valid;
+//             // total += delta;
+//         }
+//     }
+
+//     return cast(float) sqrt(total);
+// }
 
 #import,file "../module.jai";
 
@@ -265,3 +338,4 @@ calculate_similarity :: (a: [$K] float, b: [K] float) -> float {
 #import "String";
 #import "Hash_Table";
 #import "Random";
+#import "Math";
