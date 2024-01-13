@@ -163,7 +163,7 @@ main :: () {
         // write_entire_file("initial_clusters.txt", builder_to_string(*builder));
 
         iterations: int;
-        clusters, classifications, iterations = fuzzy_means(game_scores, K, max_iterations = 40, initial_clusters = initial_clusters, fuzzification = 2);
+        clusters, classifications, iterations = fuzzy_means(game_scores, K, max_iterations = 40, initial_clusters = initial_clusters, fuzzification = 8);
 
         print("Completed fuzzy means in % iterations.\n", iterations);
 
@@ -196,7 +196,7 @@ main :: () {
             print("Parsed classifications from serialized data.\n");
         }
     } else {
-        classifications = classify_points(game_scores, clusters);
+        classifications = classify_points(game_scores, clusters, fuzzification = 8);
 
         print("Completed game classifications.\n");
 
@@ -290,16 +290,17 @@ main :: () {
 
 // does this really check for similarity?
 calculate_similarity :: (a: [$K] float, b: [K] float) -> float {
-    sum: float;
+    sum: float64;
     for i: 0..K - 1 {
+        // print("% = %\n", a[i], b[i]);
         if abs(a[i] - b[i]) < 0.000001 {
-            sum += 100000;
+            sum += 1.0 / (0.000001 * 0.000001);
         } else {
-            sum += 1.0 / (a[i] - b[i]);
+            sum += 1.0 / ((a[i] - b[i]) * (a[i] - b[i]));
         }
     }
 
-    return sum;
+    return cast(float) sqrt(sum);
 }
 
 // sparse_n_dimensional_distance :: (a: [] float, b: [] float) -> float {
