@@ -60,7 +60,7 @@ cosine_similarity :: (a: [] float, b: [] float) -> float {
         return 0.0;
     }
 
-    return cast(float) dot / (sqrt(a_mag) * sqrt(b_mag));
+    return cast(float) (dot / (sqrt(a_mag) * sqrt(b_mag)));
 }
 
 sparse_cosine_similarity :: (a: [] float, b: [] float) -> float {
@@ -100,7 +100,131 @@ popularity :: (dimensions: [] float) -> float {
         length_squared += dimension * dimension;
     }
 
-    return cast(float) sqrst(length_squared);
+    return cast(float) sqrt(length_squared);
+}
+
+point_distances :: (points: [] [] float, allocator: Allocator = .{}) -> [] [] float {
+    return point_distances(points, cosine_distance, allocator);
+}
+
+point_distances :: (points: [] [] float, $distance_function: (a: [] float, b: [] float) -> float, allocator: Allocator = .{}) -> [] [] float {
+    similarities := NewArray(points.count, [] float, allocator = allocator);
+    for i: 0..similarities.count - 1 {
+        similarities[i] = NewArray(points.count, float, allocator = allocator);
+    }
+
+    parallel_for(0, points.count, (i: int, thread: int, using data: struct {points: [] [] float; similarities: [] [] float;}) {
+        // I could only fill upper triangular matrix?
+        for a: 0..i {
+            distance := distance_function(points[i], points[a]);
+            similarities[i][a] = distance;
+            if i != a {
+                similarities[a][i] = distance;
+            }
+        }
+
+        if i % 100 == 0 {
+            print("Done with % out of %.\n", i + 1, points.count);
+        }
+    }, .{points, similarities});
+
+    return similarities;
+}
+
+// point_distances: [number of points] [number of points] float
+// points: [number of points] [number of values] float
+// K: the number of similar points to consider
+// recommendations: [number of points] [number of values] float
+point_recommendations :: (point_distances: [] [] float, points: [] [] float, $K: int = 0, allocator: Allocator = .{}) -> recommendations: [] [] float {
+    assert(points.count > 0, "Cannot have an empty points list.");
+    value_count := points[0].count;
+    
+    recommendations := NewArray(points.count, [] float, allocator = allocator);
+    for i: 0..recommendations.count - 1 {
+        recommendations[i] = NewArray(value_count, float, allocator = allocator);
+    }
+
+    fuzzification :: 2;
+
+    #if K == 0 {
+        parallel_for(0, points.count, (i: int, thread: int, using data: struct {point_distances: [] [] float; points: [] [] float; recommendations: [] [] float; value_count: int;}) {
+            for value_index: 0..value_count - 1 {
+                total_membership: float;
+                for point_index: 0..points.count - 1 {
+                    distance := point_distances[i][point_index];
+                    if distance < 0.000001 {
+                        // it's either an identical point or the points are entirely 0 or something so don't include it
+                        continue;
+                    }
+
+                    // this is raised to the power of 8 because I want to basically ignore dissimilar players
+                    membership := 1.0 / distance;
+                    membership *= membership * membership * membership * membership * membership * membership * membership;
+                    // this is square rooted because I don't want just flat high playtime games to outrank everything
+                    // maybe theres a better way to solve the high playtime problem
+                    recommendations[i][value_index] += membership * points[point_index][value_index];
+                    total_membership += membership;
+                }
+
+                if total_membership >= 0.000001 {
+                    recommendations[i][value_index] /= total_membership;
+                } else {
+                    recommendations[i][value_index] = 0;
+                }
+            }
+
+            if i < points.count / get_thread_count() {
+                print("Finished recommendations for kind of % out of kind of %.\n", i + 1, points.count / get_thread_count());
+            }
+        }, .{point_distances, points, recommendations, value_count});
+    } else {
+        quick_select_memory_raw := NewArray(get_thread_count() * points.count, float, allocator = temp);
+        quick_select_memory := NewArray(get_thread_count(), [] float, allocator = temp);
+        for i: 0..quick_select_memory.count - 1 {
+            quick_select_memory[i].data = quick_select_memory_raw.data + i * points.count;
+            quick_select_memory[i].count = points.count;
+        }
+
+        parallel_for(0, points.count, (i: int, thread: int, using data: struct {point_distances: [] [] float; points: [] [] float; recommendations: [] [] float; quick_select_memory: [] [] float; value_count: int;}) {
+            maximum_distance_consideration := quick_select(point_distances[i], K, *quick_select_memory[thread]);
+
+            // TODO this could be sped up quite a lot
+            // because quick_select semi-sorts a partition of the original array
+            // if I map this data to the original index values, I could use the partitioned memory section
+            // to reduce the amount of iterations by 90+%
+                
+            for value_index: 0..value_count - 1 {
+                total_membership: float;
+                for point_index: 0..points.count - 1 {
+                    distance := point_distances[i][point_index];
+                    if distance < 0.000001 || distance > maximum_distance_consideration {
+                        // it's either an identical point or the points are entirely 0 or something so don't include it
+                        continue;
+                    }
+
+                    // this is raised to the power of 8 because I want to basically ignore dissimilar players
+                    membership := 1.0 / distance;
+                    membership *= membership * membership * membership * membership * membership * membership * membership;
+                    // this is square rooted because I don't want just flat high playtime games to outrank everything
+                    // maybe theres a better way to solve the high playtime problem
+                    recommendations[i][value_index] += membership * points[point_index][value_index];
+                    total_membership += membership;
+                }
+
+                if total_membership >= 0.000001 {
+                    recommendations[i][value_index] /= total_membership;
+                } else {
+                    recommendations[i][value_index] = 0;
+                }
+            }
+
+            if i < points.count / get_thread_count() {
+                print("Finished recommendations for kind of % out of kind of %.\n", i + 1, points.count / get_thread_count());
+            }
+        }, .{point_distances, points, recommendations, quick_select_memory, value_count});
+    }
+
+    return recommendations;
 }
 
 fuzzy_means :: (points: [] [] float, $K: int, max_iterations: int = 1000, initial_clusters: [] [] float, fuzzification: float = 2, allocator: Allocator = .{}) -> clusters: [K] [] float, membership: [] [K] float, iterations: int {
@@ -330,6 +454,58 @@ random :: (points: [] [] float, clusters: *[$K] [] float) {
             clusters.*[a][b] = random_get_zero_to_one();
         }
     }
+}
+
+// selects the smallest_index value from the semi-sorted array efficiently
+quick_select :: (values: [] float, smallest_index: int, memory: *[] float = null) -> float {
+    if !memory {
+        memory.* = NewArray(values.count, float, allocator = temp);
+    }
+    memcpy(memory.data, values.data, values.count * size_of(float));
+
+    return quick_select(values, smallest_index, 0, values.count - 1, memory);
+}
+
+quick_select :: (values: [] float, smallest_index: int, left: int, right: int, memory: *[] float) -> float {
+    partition :: (memory: [] float, left: int, right: int) -> int {
+        x := memory[right];
+        i := left;
+        for j: left..right - 1 {
+            if memory[j] <= x {
+                memory[i], memory[j] = memory[j], memory[i];
+                i += 1;
+            }
+        }
+        memory[i], memory[right] = memory[right], memory[i];
+
+        return i;
+    }
+
+    if left == 0 && right == 0 {
+        return 0;
+    }
+
+    if values.count == 0 {
+        return 0;
+    }
+
+    while true {
+        index := partition(memory.*, left, right);
+
+        if index - left == smallest_index - 1 {
+            return memory.*[index];
+        }
+
+        if index - left > smallest_index - 1 {
+            right = index - 1;
+            continue;
+        }
+
+        smallest_index = smallest_index - index + left - 1;
+        left = index + 1;
+    }
+
+    return 0;
 }
 
 #scope_module

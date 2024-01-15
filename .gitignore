@@ -3,3 +3,4 @@
 *.pdb
 clusters.txt
 classifications.txt
+example/*.txt
