@@ -272,7 +272,7 @@ main :: () {
         best_game_rating: float;
         best_game_index: int = -1;
         best_game_rating_maximum: float;
-        for i: 0..9 {
+        for i: 0..19 {
             for score, game_index: recommendations[player_index] {
                 game_playtime := game_playtimes[game_index];
 

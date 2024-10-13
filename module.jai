@@ -108,9 +108,9 @@ point_distances :: (points: [] [] float, allocator: Allocator = .{}) -> [] [] fl
 }
 
 point_distances :: (points: [] [] float, $distance_function: (a: [] float, b: [] float) -> float, allocator: Allocator = .{}) -> [] [] float {
-    similarities := NewArray(points.count, [] float, allocator = allocator);
+    similarities := NewArray(points.count, [] float,, allocator = allocator);
     for i: 0..similarities.count - 1 {
-        similarities[i] = NewArray(points.count, float, allocator = allocator);
+        similarities[i] = NewArray(points.count, float,, allocator = allocator);
     }
 
     parallel_for(0, points.count, (i: int, thread: int, using data: struct {points: [] [] float; similarities: [] [] float;}) {
@@ -122,13 +122,65 @@ point_distances :: (points: [] [] float, $distance_function: (a: [] float, b: []
                 similarities[a][i] = distance;
             }
         }
-
-        if i % 100 == 0 {
-            print("Done with % out of %.\n", i + 1, points.count);
-        }
     }, .{points, similarities});
 
     return similarities;
+}
+
+// point_distances: [number of points] [number of points] float
+// categories: [number of points] [number of categories] bool (whether or not this point is in this category)
+// weights: [number of points] [number of categories] float (weight of this category)
+category_weights :: (point_distances: [] [] float, categories: [] [] bool, allocator: Allocator = .{}) -> weights: [] [] float {
+    assert(point_distances.count > 0, "Cannot have an empty list of points.");
+    category_count := categories[0].count;
+
+    weights := NewArray(point_distances.count, [] float,, allocator = allocator);
+    for i: 0..weights.count - 1 {
+        weights[i] = NewArray(category_count, float,, allocator = allocator);
+    }
+
+    category_sums := NewArray(get_thread_count(), [] float64,, allocator = temp);
+    for i: 0..category_sums.count - 1 {
+        category_sums[i] = NewArray(category_count, float64,, allocator = temp);
+    }
+    category_divisors := NewArray(get_thread_count(), [] int,, allocator = temp);
+    for i: 0..category_divisors.count - 1 {
+        category_divisors[i] = NewArray(category_count, int,, allocator = temp);
+    }
+
+    parallel_for(0, point_distances.count, (i: int, thread: int, using data: struct {
+            point_distances: [] [] float;
+            categories: [] [] bool;
+            weights: [] [] float;
+            category_count: int;
+            category_sums: [] [] float64;
+            category_divisors: [] [] int;}) {
+
+        category_sum := category_sums[thread];
+        memset(category_sum.data, 0, category_sum.count * size_of(float64));
+
+        category_divisor := category_divisors[thread];
+        memset(category_divisor.data, 0, category_divisor.count * size_of(int));
+
+        for point_distance, point_index: point_distances[i] {
+            for valid_category, category_index: categories[point_index] {
+                point_similarity := 1.0 / (point_distance + 1.0);
+                category_value := ifx valid_category then 1 else 0;
+                category_sum[category_index] += category_value * point_similarity;
+                category_divisor[category_index] += category_value;
+            }
+        }
+
+        for a: 0..category_count - 1 {
+            if category_divisor[a] == 0 {
+                weights[i][a] = 0;
+            } else {
+                weights[i][a] = cast(float) (category_sum[a] / category_divisor[a]);
+            }
+        }
+    }, .{point_distances, categories, weights, category_count, category_sums, category_divisors});
+
+    return weights;
 }
 
 // point_distances: [number of points] [number of points] float
@@ -139,9 +191,9 @@ point_recommendations :: (point_distances: [] [] float, points: [] [] float, $K:
     assert(points.count > 0, "Cannot have an empty points list.");
     value_count := points[0].count;
     
-    recommendations := NewArray(points.count, [] float, allocator = allocator);
+    recommendations := NewArray(points.count, [] float,, allocator = allocator);
     for i: 0..recommendations.count - 1 {
-        recommendations[i] = NewArray(value_count, float, allocator = allocator);
+        recommendations[i] = NewArray(value_count, float,, allocator = allocator);
     }
 
     fuzzification :: 2;
@@ -172,21 +224,24 @@ point_recommendations :: (point_distances: [] [] float, points: [] [] float, $K:
                     recommendations[i][value_index] = 0;
                 }
             }
-
-            if i < points.count / get_thread_count() {
-                print("Finished recommendations for kind of % out of kind of %.\n", i + 1, points.count / get_thread_count());
-            }
         }, .{point_distances, points, recommendations, value_count});
     } else {
-        quick_select_memory_raw := NewArray(get_thread_count() * points.count, float, allocator = temp);
-        quick_select_memory := NewArray(get_thread_count(), [] float, allocator = temp);
+        quick_select_memory_raw := NewArray(get_thread_count() * points.count, float,, allocator = temp);
+        quick_select_memory := NewArray(get_thread_count(), [] float,, allocator = temp);
         for i: 0..quick_select_memory.count - 1 {
             quick_select_memory[i].data = quick_select_memory_raw.data + i * points.count;
             quick_select_memory[i].count = points.count;
         }
 
         parallel_for(0, points.count, (i: int, thread: int, using data: struct {point_distances: [] [] float; points: [] [] float; recommendations: [] [] float; quick_select_memory: [] [] float; value_count: int;}) {
-            maximum_distance_consideration := quick_select(point_distances[i], K, *quick_select_memory[thread]);
+            maximum_distance_consideration: float;
+            if K >= point_distances[i].count {
+                for distance: point_distances[i] {
+                    maximum_distance_consideration = max(maximum_distance_consideration, distance);
+                }
+            } else {
+                maximum_distance_consideration = quick_select(point_distances[i], K, *quick_select_memory[thread]);
+            }
 
             // TODO this could be sped up quite a lot
             // because quick_select semi-sorts a partition of the original array
@@ -217,10 +272,6 @@ point_recommendations :: (point_distances: [] [] float, points: [] [] float, $K:
                     recommendations[i][value_index] = 0;
                 }
             }
-
-            if i < points.count / get_thread_count() {
-                print("Finished recommendations for kind of % out of kind of %.\n", i + 1, points.count / get_thread_count());
-            }
         }, .{point_distances, points, recommendations, quick_select_memory, value_count});
     }
 
@@ -247,23 +298,23 @@ fuzzy_means :: (points: [] [] float, $K: int, $distance_function: (a: [] float, 
     }
 
     dimensions := points[0].count;
-    membership := NewArray(points.count, [K] float, allocator = allocator);
+    membership := NewArray(points.count, [K] float,, allocator = allocator);
 
-    intermediary_flat_clusters64 := NewArray(K * dimensions, float64, allocator = temp);
+    intermediary_flat_clusters64 := NewArray(K * dimensions, float64,, allocator = temp);
     intermediary_clusters64: [K] [] float64;
     for i: 0..K - 1 {
         intermediary_clusters64[i].data = intermediary_flat_clusters64.data + i * dimensions;
         intermediary_clusters64[i].count = dimensions;
     }
 
-    intermediary_flat_clusters32 := NewArray(K * dimensions, float32, allocator = temp);
+    intermediary_flat_clusters32 := NewArray(K * dimensions, float32,, allocator = temp);
     intermediary_clusters32: [K] [] float32;
     for i: 0..K - 1 {
         intermediary_clusters32[i].data = intermediary_flat_clusters32.data + i * dimensions;
         intermediary_clusters32[i].count = dimensions;
     }
     
-    flat_clusters := NewArray(K * dimensions, float, allocator = allocator);
+    flat_clusters := NewArray(K * dimensions, float,, allocator = allocator);
     clusters: [K] [] float;
     for i: 0..K - 1 {
         clusters[i].data = flat_clusters.data + i * dimensions;
@@ -363,7 +414,7 @@ classify_points :: (points: [] [] float, clusters: [$K] [] float, fuzzification:
 }
 
 classify_points :: (points: [] [] float, clusters: [$K] [] float, $distance_function: (a: [] float, b: [] float) -> float, fuzzification: float = 2, allocator: Allocator = .{}) -> points: [] [K] float {
-    membership := NewArray(points.count, [K] float, allocator = allocator);
+    membership := NewArray(points.count, [K] float,, allocator = allocator);
 
     // calculate the membership weights for each point
     parallel_for(0, points.count, (a: int, thread: int, using data: struct {points: [] [] float; clusters: [K] [] float; membership: [] [K] float; fuzzification: float;}) {
@@ -459,7 +510,7 @@ random :: (points: [] [] float, clusters: *[$K] [] float) {
 // selects the smallest_index value from the semi-sorted array efficiently
 quick_select :: (values: [] float, smallest_index: int, memory: *[] float = null) -> float {
     if !memory {
-        memory.* = NewArray(values.count, float, allocator = temp);
+        memory.* = NewArray(values.count, float,, allocator = temp);
     }
     memcpy(memory.data, values.data, values.count * size_of(float));
 
